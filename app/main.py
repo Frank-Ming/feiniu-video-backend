@@ -1,8 +1,10 @@
 """FastAPI 主程序：扫描 + 流媒体 + 用户系统 + 观看记录"""
 from __future__ import annotations
 
+import json
 import logging
 import re
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Iterator, List, Optional
@@ -12,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import CONFIG
-from .scanner import scanner, filter_items, probe_duration
+from .scanner import scanner, filter_items, probe_duration, _get_ffprobe
 from .users import user_store
 
 # ---- 日志 ----
@@ -43,6 +45,7 @@ app.add_middleware(
 )
 
 
+# 注：扩展名 fallback；流式响应时优先用 ffprobe 异步探测真实 MIME（带内存缓存）
 VIDEO_EXT_TO_MIME = {
     ".mp4": "video/mp4",
     ".m4v": "video/mp4",
@@ -131,7 +134,9 @@ def logout(username: str = Depends(require_user),
 def me(username: str = Depends(current_user)):
     if not username:
         return {"username": None}
-    return {"username": username}
+    user = user_store.users.get(username)
+    created_at = user.created_at if user else None
+    return {"username": username, "created_at": created_at}
 
 
 # ---------- 视频 ----------
@@ -213,7 +218,7 @@ async def get_video(video_id: str):
 @app.get("/api/random")
 async def pick_random(
     max_size_mb: int = Query(200, ge=1, le=10240,
-                             description="最大文件大小（MB）；超过的视频不会出现在随机池中"),
+                            description="最大文件大小（MB）；超过的视频不会出现在随机池中"),
     exclude: Optional[List[str]] = Query(None,
                                           description="要排除的视频 id 列表"),
     series_id: Optional[str] = Query(None,
@@ -246,6 +251,58 @@ async def get_series(series_id: str):
         "count": len(items),
         "videos": [v.to_dict() for v in items],
     }
+
+
+# ---------- MIME 真实探测（缓存到内存） ----------
+_MIME_CACHE: dict[str, str] = {}
+
+
+def _detect_mime(fp: Path) -> str:
+    """优先按扩展名 fallback；扩展名为 .mp4 但内容不是 mp4 时，用 ffprobe 探测真实容器"""
+    fallback = VIDEO_EXT_TO_MIME.get(fp.suffix.lower(), "application/octet-stream")
+    key = str(fp.resolve())
+    if key in _MIME_CACHE:
+        return _MIME_CACHE[key]
+    # 只对常见视频扩展名做探测（MPEG-TS 经常被错误命名为 .mp4）
+    if fp.suffix.lower() not in (".mp4", ".m4v", ".mov", ".mkv"):
+        _MIME_CACHE[key] = fallback
+        return fallback
+    try:
+        bin_path = _get_ffprobe()
+        if bin_path is None:
+            _MIME_CACHE[key] = fallback
+            return fallback
+        # 只解析 format 段，看 format_name
+        proc = subprocess.run(
+            [bin_path, "-v", "quiet", "-print_format", "json",
+             "-show_format", str(fp)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            data = json.loads(proc.stdout or "{}")
+            fmt_name = ((data.get("format") or {}).get("format_name", "") or "").lower()
+            # 映射 ffprobe format_name → 标准 MIME
+            # 注意：ffmpeg 对 mp4/mov 文件会同时报 'mov,mp4,m4a,3gp,3g2,mj2'
+            # 所以优先精确匹配再 fallback
+            if "mpegts" in fmt_name:
+                mime = "video/mp2t"
+            elif "matroska" in fmt_name or "webm" in fmt_name:
+                mime = "video/webm" if "webm" in fmt_name else "video/x-matroska"
+            elif "mp4" in fmt_name or "mov" in fmt_name:
+                # 扩展名是 .mp4 但格式名里有 mpegts 的已经被上面拦下
+                mime = "video/mp4"
+            elif "avi" in fmt_name:
+                mime = "video/x-msvideo"
+            elif "flv" in fmt_name:
+                mime = "video/x-flv"
+            else:
+                mime = fallback
+            _MIME_CACHE[key] = mime
+            return mime
+    except Exception:
+        pass
+    _MIME_CACHE[key] = fallback
+    return fallback
 
 
 @app.post("/api/videos/{video_id}/probe")
@@ -314,7 +371,7 @@ def stream_video(video_id: str, request: Request):
         raise HTTPException(status_code=404, detail="file missing on disk")
 
     file_size = fp.stat().st_size
-    mime = VIDEO_EXT_TO_MIME.get(fp.suffix.lower(), "application/octet-stream")
+    mime = _detect_mime(fp)
 
     range_header = request.headers.get("range") or request.headers.get("Range")
     headers = {
