@@ -14,3 +14,7 @@ tests/
 
 # Docker tar（避免不小心 commit）
 *.tar
+
+# 运行时缓存 + 用户数据（不进 git）
+cache/
+data/
