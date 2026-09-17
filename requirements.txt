@@ -1,0 +1,5 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+# 通过 imageio-ffmpeg 拿到跨平台的 ffprobe 可执行文件
+imageio-ffmpeg==0.5.1

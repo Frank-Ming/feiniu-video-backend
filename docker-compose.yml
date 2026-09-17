@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  feiniu-video-api:
+    build: .
+    container_name: feiniu-video-api
+    restart: unless-stopped
+    ports:
+      - "6969:6969"
+    environment:
+      - VIDEO_ROOT=/vol1/1000/视频/H
+      - SERVER_PORT=6969
+    volumes:
+      # 把飞牛 NAS 的视频目录挂进容器，按需修改左侧路径
+      - /vol1/1000/视频/H:/vol1/1000/视频/H:ro

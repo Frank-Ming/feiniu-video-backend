@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 测试 / 临时
+tests/
+*.tmp
+
+# Docker tar（避免不小心 commit）
+*.tar

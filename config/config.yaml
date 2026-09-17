@@ -1,0 +1,25 @@
+# 飞牛短视频后端配置
+server:
+  host: 0.0.0.0
+  port: 6969
+
+# 视频扫描根目录（NAS 上的实际路径）
+# 默认使用飞牛 OS 的常用路径，也可以通过环境变量 VIDEO_ROOT 覆盖
+video:
+  root: /vol1/1000/视频/H
+  # 支持的视频扩展名
+  extensions:
+    - .mp4
+    - .mov
+    - .m4v
+    - .mkv
+    - .webm
+    - .avi
+    - .flv
+    - .ts
+  # 是否递归扫描子目录
+  recursive: true
+  # 是否缓存扫描结果（秒）
+  cache_ttl: 30
+  # 是否扫描时探测视频时长（首次扫描稍慢，但能让手机端按时长筛选）
+  probe_duration: true
