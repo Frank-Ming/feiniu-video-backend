@@ -11,5 +11,8 @@ services:
       - VIDEO_ROOT=/vol1/1000/视频/H
       - SERVER_PORT=6969
     volumes:
-      # 把飞牛 NAS 的视频目录挂进容器，按需修改左侧路径
+      # NAS 上的视频根目录（按需修改左侧路径）
       - /vol1/1000/视频/H:/vol1/1000/视频/H:ro
+      # 用户数据 / 缓存 单独持久化到 Docker 应用目录
+      - /vol3/1000/Docker/feiniu-video/data:/app/data
+      - /vol3/1000/Docker/feiniu-video/cache:/app/cache
