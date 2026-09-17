@@ -36,6 +36,12 @@ class VideoItem:
     mtime: float
     dir: str = ""
     duration: Optional[float] = None    # 懒探测，可能为 None
+    # 短剧元数据
+    is_series: bool = False
+    series_id: str = ""        # 同一部短剧的所有视频共用同一个 id
+    episode_no: int = 0        # 当前集数（1 开始；非短剧为 0）
+    series_count: int = 0     # 同剧总集数（仅 is_series 时有效）
+    siblings: List[str] = field(default_factory=list)  # 同剧全部 id（按集数排序）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -45,6 +51,30 @@ class VideoItem:
 # ffprobe
 # ---------------------------------------------------------------------------
 _FFPROBE_BIN: Optional[str] = None
+
+
+def _cn_num(s: str) -> int:
+    """中文数字转阿拉伯数字。最多支持 9999。"""
+    cn_map = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+              "十": 10, "百": 100}
+    if s.isdigit():
+        return int(s)
+    if not s:
+        return 0
+    total = 0
+    cur = 0
+    for ch in s:
+        v = cn_map.get(ch, 0)
+        if v >= 10:
+            if cur == 0:
+                cur = 1
+            total += cur * v
+            cur = 0
+        else:
+            cur = v
+    total += cur
+    return total
 
 
 def _get_ffprobe() -> Optional[str]:
@@ -265,7 +295,106 @@ class VideoScanner:
                 duration=None,   # 懒探测
             ))
         items.sort(key=lambda x: x.mtime, reverse=True)
+
+        # 第二遍：识别短剧
+        self._detect_series(items)
         return items
+
+    def _detect_series(self, items: List[VideoItem]) -> None:
+        """为每个视频计算短剧元数据。规则：
+        1. 同目录下没有其他文件夹（避免与「电视剧/系列」混淆）
+        2. 文件名是数字/集数（解析出 episode_no > 0）
+        满足以上两条才算短剧；同目录下多个短剧视频归为同一部短剧。
+        """
+        from collections import defaultdict
+        groups: Dict[str, List[VideoItem]] = defaultdict(list)
+        for v in items:
+            d = str(Path(v.full_path).parent)
+            groups[d].append(v)
+
+        for dir_path, group in groups.items():
+            parent = Path(dir_path)
+            if not parent.exists() or self._sibling_has_subdir(parent):
+                continue
+
+            parsed: List[Tuple[VideoItem, int]] = []
+            for v in group:
+                ep = self._parse_episode_no(v.name)
+                if ep > 0:
+                    parsed.append((v, ep))
+            if len(parsed) < 2:
+                continue
+
+            # 去重：同一集数保留名字最「纯」的那个（中文「第N集」/「EPxx」> 纯数字）
+            by_ep: Dict[int, List[VideoItem]] = {}
+            for v, ep in parsed:
+                by_ep.setdefault(ep, []).append(v)
+
+            def _purity(name: str) -> int:
+                import re as _re
+                if _re.search(r"第\s*[0-9一二三四五六七八九十]+\s*[集话話]", name):
+                    return 0
+                if _re.search(r"EP[\.\s]*[0-9]+", name, _re.IGNORECASE):
+                    return 1
+                if _re.fullmatch(r"[0-9]+", name):
+                    return 2
+                return 3
+
+            deduped: List[VideoItem] = []
+            for ep in sorted(by_ep.keys()):
+                vs = sorted(by_ep[ep], key=lambda x: _purity(x.name))
+                deduped.append(vs[0])
+
+            deduped.sort(key=lambda x: self._parse_episode_no(x.name))
+            count = len(deduped)
+
+            # 稳定 series_id：基于「剧集所在目录的相对路径」
+            try:
+                rel_dir = parent.relative_to(self.root).as_posix()
+            except ValueError:
+                rel_dir = dir_path
+            series_id = hashlib.md5(
+                f"series:{rel_dir}".encode("utf-8")
+            ).hexdigest()[:16]
+            ids = [v.id for v in deduped]
+            for v in deduped:
+                ep = self._parse_episode_no(v.name)
+                v.is_series = True
+                v.series_id = series_id
+                v.episode_no = ep
+                v.series_count = count
+                v.siblings = ids
+
+    @staticmethod
+    def _parse_episode_no(name: str) -> int:
+        """从文件名解析集数。识别「第1集」「EP02」「01」等格式，返回 1-based 集数；无法识别返回 0"""
+        import re
+        s = name.strip()
+        # 中文：「第一集」「第1集」「第01集」「第一話」「第1話」
+        m = re.search(r"第\s*([0-9０-９]+|[一二三四五六七八九十百零]+)\s*[集话話話]", s)
+        if m:
+            return _cn_num(m.group(1))
+        # 英文：EP01 / E02 / EP.03 / Episode 4
+        m = re.search(r"(?:EP|E)[\.\s]*([0-9]+)", s, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+        # 纯数字文件名（注意：要先排除明显不是集数的，比如「1080p」「60fps」）
+        # 要求：数字前面不是字母数字（避免匹配 "x1080"），后面必须是非字母数字且不是 'p' / 'x'
+        m = re.search(r"(?<![A-Za-z0-9])([0-9]{1,4})(?![A-Za-z0-9pPx])", s)
+        if m:
+            return int(m.group(1))
+        return 0
+
+    @staticmethod
+    def _sibling_has_subdir(directory: Path) -> bool:
+        """判断同目录（不含子目录）下是否还有任何子目录"""
+        try:
+            for p in directory.iterdir():
+                if p.is_dir():
+                    return True
+        except OSError:
+            pass
+        return False
 
     # ---- 对外 API ----
     def list_videos(self) -> List[VideoItem]:
@@ -311,6 +440,23 @@ class VideoScanner:
             counter[d] = counter.get(d, 0) + 1
         return [{"name": k, "count": v} for k, v in
                 sorted(counter.items(), key=lambda x: -x[1])]
+
+    def pick_random(self, max_size_bytes: int = 200 * 1024 * 1024,
+                    exclude_ids: Optional[List[str]] = None,
+                    only_series_id: Optional[str] = None) -> Optional[VideoItem]:
+        """随机选一个视频。优先选 size <= max_size_bytes 的；可选排除/限定。"""
+        import random
+        pool = self.list_videos()
+        if exclude_ids:
+            pool = [v for v in pool if v.id not in set(exclude_ids)]
+        if only_series_id:
+            pool = [v for v in pool if v.series_id == only_series_id]
+        small = [v for v in pool if v.size <= max_size_bytes]
+        if small:
+            return random.choice(small)
+        if pool:
+            return random.choice(pool)
+        return None
 
 
 # 全局单例

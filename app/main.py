@@ -210,6 +210,44 @@ async def get_video(video_id: str):
     return item.to_dict()
 
 
+@app.get("/api/random")
+async def pick_random(
+    max_size_mb: int = Query(200, ge=1, le=10240,
+                             description="最大文件大小（MB）；超过的视频不会出现在随机池中"),
+    exclude: Optional[List[str]] = Query(None,
+                                          description="要排除的视频 id 列表"),
+    series_id: Optional[str] = Query(None,
+                                     description="限定在某个短剧内随机（自动连播下一集时用）"),
+    username: str = Depends(current_user),   # 不强制登录，但登录后可避免随机到「不感兴趣」的
+):
+    """登录后随机挑一个视频；要求文件 < max_size_mb 以保证加载快"""
+    if not scanner.list_videos():
+        await scanner.ensure_scanned()
+    item = scanner.pick_random(
+        max_size_bytes=max_size_mb * 1024 * 1024,
+        exclude_ids=exclude,
+        only_series_id=series_id,
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="no videos available")
+    return item.to_dict()
+
+
+@app.get("/api/series/{series_id}")
+async def get_series(series_id: str):
+    """返回某部短剧的全部视频（按集数排序）"""
+    items = [v for v in scanner.list_videos()
+             if v.series_id == series_id]
+    if not items:
+        raise HTTPException(status_code=404, detail="series not found")
+    items.sort(key=lambda x: x.episode_no)
+    return {
+        "series_id": series_id,
+        "count": len(items),
+        "videos": [v.to_dict() for v in items],
+    }
+
+
 @app.post("/api/videos/{video_id}/probe")
 async def probe_one(video_id: str):
     """按 id 探测时长（懒探测接口）"""
