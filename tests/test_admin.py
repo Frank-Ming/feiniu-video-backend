@@ -291,3 +291,37 @@ def test_logout_clears_cookie(client):
     r = client.get("/admin", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/admin/login"
+
+
+def test_register_api_requires_admin(client):
+    """客户端公开注册入口已下线：未带 token 调用应 401，带普通用户 token 应 403"""
+    # 完全无 token
+    r = client.post("/api/auth/register",
+                    json={"username": "mallory", "password": "x12345"})
+    assert r.status_code == 401
+    # 用普通用户 token
+    r = client.post("/api/auth/login",
+                    json={"username": "Frank", "password": "1qaz1QAZ"})
+    frank_token = r.json()["token"]
+    r = client.post("/api/auth/register",
+                    headers={"Authorization": f"Bearer {frank_token}"},
+                    json={"username": "mallory", "password": "x12345"})
+    assert r.status_code == 403
+
+
+def test_register_api_works_with_admin_token(client):
+    """超管 token 调用 register 能正常建账号"""
+    r = client.post("/api/auth/login",
+                    json={"username": "www", "password": "1qaz!QAZ"})
+    admin_token = r.json()["token"]
+    r = client.post("/api/auth/register",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={"username": "bob", "password": "bob12345"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "bob"
+    assert body["is_admin"] is False
+    # 用新账号登录
+    r = client.post("/api/auth/login",
+                    json={"username": "bob", "password": "bob12345"})
+    assert r.status_code == 200

@@ -129,12 +129,12 @@ def get_config():
 
 # ---------- 用户系统 ----------
 @app.post("/api/auth/register")
-def register(payload: dict):
+def register(payload: dict, _admin: str = Depends(require_admin)):
+    """仅超管可在外部 API 中创建账号（手机端注册入口已下线）"""
     username = (payload.get("username") or "").strip()
     password = payload.get("password") or ""
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="用户名和密码不能为空")
-    user = user_store.register(username, password)
+    is_admin = bool(payload.get("is_admin", False))
+    user = user_store.admin_create_user(username, password, is_admin=is_admin)
     if not user:
         raise HTTPException(status_code=400, detail="用户名已存在或密码过短")
     token = user_store.login(username, password)
