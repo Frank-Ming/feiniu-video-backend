@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 
 from .config import CONFIG
 from .scanner import scanner, filter_items, probe_duration, _get_ffprobe
+from .transcoder import transcoder, TaskStatus
 from .users import user_store
 
 # ---- 日志 ----
@@ -662,7 +663,12 @@ def stream_video(video_id: str, request: Request):
     if not item:
         raise HTTPException(status_code=404, detail="video not found")
 
-    fp = Path(item.full_path)
+    # 优先吐转码后的文件（兼容性更好）
+    transcoded_fp = transcoder.transcoded_path(video_id)
+    if transcoded_fp is not None:
+        fp = transcoded_fp
+    else:
+        fp = Path(item.full_path)
     if not fp.exists():
         raise HTTPException(status_code=404, detail="file missing on disk")
 
@@ -711,6 +717,60 @@ def stream_video(video_id: str, request: Request):
                 yield chunk
 
     return StreamingResponse(_full(), media_type=mime, headers=headers)
+
+
+# ---------- 按需转码 ----------
+@app.post("/api/transcode/{video_id}")
+def api_transcode_start(video_id: str,
+                        _user: str = Depends(require_user)):
+    """请求转码。幂等：已在跑/已转好直接返回。
+    转码是后台异步任务，立即返回 task 状态。
+    """
+    if scanner.get_by_id(video_id) is None:
+        raise HTTPException(status_code=404, detail="video not found")
+    t = transcoder.request(video_id)
+    return _task_to_dict(t)
+
+
+@app.get("/api/transcode/{video_id}")
+def api_transcode_status(video_id: str,
+                          _user: str = Depends(require_user)):
+    """查转码状态 / 缓存文件是否存在。"""
+    has_cache = transcoder.has_transcoded(video_id)
+    t = transcoder.get_task(video_id)
+    out = {
+        "video_id": video_id,
+        "has_cache": has_cache,
+    }
+    if t is not None:
+        out["task"] = _task_to_dict(t)
+    else:
+        out["task"] = None
+    return out
+
+
+@app.post("/api/transcode/{video_id}/cancel")
+def api_transcode_cancel(video_id: str,
+                           _user: str = Depends(require_user)):
+    """取消进行中的转码任务（清理 partial）。"""
+    ok = transcoder.cancel(video_id)
+    return {"ok": ok}
+
+
+def _task_to_dict(t) -> dict:
+    """TranscodeTask → JSON dict。"""
+    return {
+        "video_id": t.video_id,
+        "task_id": t.task_id,
+        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+        "progress": round(t.progress, 4),
+        "error": t.error,
+        "output_path": t.output_path,
+        "created_at": t.created_at,
+        "started_at": t.started_at,
+        "finished_at": t.finished_at,
+        "pid": t.pid,
+    }
 
 
 @app.exception_handler(Exception)
