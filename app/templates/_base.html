@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}飞牛短视频 · 管理后台{% endblock %}</title>
+    <link rel="stylesheet" href="/static/app.css?v=1">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-brand">
+            <span class="logo">FN</span>
+            <span>飞牛短视频 · 管理后台</span>
+        </div>
+        <nav class="topbar-nav">
+            <a href="/admin">用户管理</a>
+            <a href="/api/health" target="_blank">健康检查</a>
+        </nav>
+        <div class="topbar-right">
+            {% if admin %}
+                <span class="who">登录身份：<b>{{ admin }}</b></span>
+                <form method="post" action="/admin/logout" style="display:inline;">
+                    <button class="btn btn-sm btn-ghost" type="submit">退出</button>
+                </form>
+            {% endif %}
+        </div>
+    </header>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="footer">
+        Feiniu Video Admin · 仅超管可访问 · 客户端请使用普通账号登录
+    </footer>
+</body>
+</html>

@@ -1,0 +1,88 @@
+{% extends "_base.html" %}
+{% block title %}用户管理 · 飞牛短视频后台{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-title">
+        <div>
+            <h1>用户管理</h1>
+            <div class="subtitle">管理客户端可登录的账号；超管账号只能从后台新增/调整</div>
+        </div>
+        <a href="/admin/users/new" class="btn btn-primary">
+            <span>+</span> 新增用户
+        </a>
+    </div>
+
+    {% if error %}
+        <div class="alert alert-error">
+            <span>⚠</span>
+            <span>{{ error }}</span>
+        </div>
+    {% endif %}
+
+    <div class="card">
+        <div class="toolbar">
+            <h2>所有用户 <span class="count">共 {{ users|length }} 个</span></h2>
+        </div>
+        {% if users %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>用户名</th>
+                    <th>角色</th>
+                    <th>创建时间</th>
+                    <th>最后登录</th>
+                    <th style="text-align:right;">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in users %}
+                <tr>
+                    <td class="username">
+                        {{ u.username }}
+                        {% if u.username == current_admin %}
+                            <span class="badge badge-you">你</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if u.is_admin %}
+                            <span class="badge badge-admin">超管</span>
+                        {% else %}
+                            <span class="badge badge-user">普通用户</span>
+                        {% endif %}
+                    </td>
+                    <td><span class="muted">{{ u.created_at | fmt_time }}</span></td>
+                    <td><span class="muted">{{ u.last_login_at | fmt_time }}</span></td>
+                    <td class="actions">
+                        <a href="/admin/users/{{ u.username }}/edit"
+                           class="btn btn-sm">编辑</a>
+                        {% if u.username != current_admin %}
+                        <form method="post"
+                              action="/admin/users/{{ u.username }}/delete"
+                              onsubmit="return confirm('确定要删除用户 {{ u.username }} 吗？该用户的观看记录也会被清除，且不可恢复。');"
+                              style="display:inline;">
+                            <button class="btn btn-sm btn-danger" type="submit">删除</button>
+                        </form>
+                        {% else %}
+                        <button class="btn btn-sm" disabled
+                                style="opacity:.4;cursor:not-allowed;"
+                                title="不能删除自己的账号">删除</button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty">
+            <div class="icon">👤</div>
+            <div>暂无用户</div>
+        </div>
+        {% endif %}
+    </div>
+
+    <p class="form-hint" style="margin-top:16px;text-align:center;">
+        删除用户会同时清除该用户的观看记录和所有登录 token，且不可恢复
+    </p>
+</div>
+{% endblock %}

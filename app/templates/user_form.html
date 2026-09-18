@@ -1,0 +1,80 @@
+{% extends "_base.html" %}
+{% block title %}{{ '编辑用户' if mode == 'edit' else '新增用户' }} · 飞牛短视频后台{% endblock %}
+
+{% block content %}
+<div class="container container-sm">
+    <div class="page-title">
+        <div>
+            <h1>{{ '编辑用户' if mode == 'edit' else '新增用户' }}</h1>
+            <div class="subtitle">
+                {% if mode == 'edit' %}
+                    修改用户信息；密码留空则不修改
+                {% else %}
+                    创建新的客户端账号或超管账号
+                {% endif %}
+            </div>
+        </div>
+        <a href="/admin" class="btn btn-ghost">← 返回列表</a>
+    </div>
+
+    {% if error %}
+        <div class="alert alert-error">
+            <span>⚠</span>
+            <span>{{ error }}</span>
+        </div>
+    {% endif %}
+
+    <div class="card card-pad">
+        <form method="post"
+              {% if mode == 'new' %}
+                  action="/admin/users/new"
+              {% else %}
+                  action="/admin/users/{{ user.username }}/edit"
+              {% endif %}>
+
+            {% if mode == 'edit' %}
+            <div class="form-group">
+                <label>用户名</label>
+                <input class="form-input" type="text"
+                       value="{{ user.username }}" readonly>
+                <div class="form-hint">用户名不可修改</div>
+            </div>
+            {% else %}
+            <div class="form-group">
+                <label>用户名 <span class="req">*</span></label>
+                <input class="form-input" type="text" name="username"
+                       placeholder="建议使用字母 / 数字 / 下划线" required autofocus>
+            </div>
+            {% endif %}
+
+            <div class="form-group">
+                <label>
+                    密码
+                    {% if mode == 'edit' %}<span class="form-hint" style="margin:0;display:inline;">（留空表示不修改）</span>{% else %}<span class="req">*</span>{% endif %}
+                </label>
+                <input class="form-input" type="password" name="password"
+                       placeholder="{% if mode == 'edit' %}留空则保留原密码{% else %}至少 4 位{% endif %}"
+                       {% if mode == 'new' %}required{% endif %}>
+            </div>
+
+            <div class="form-group">
+                <label class="form-check">
+                    <input type="checkbox" name="is_admin"
+                           {% if user and user.is_admin %}checked{% endif %}>
+                    <span>设为超管（可登录后台进行用户管理）</span>
+                </label>
+                <div class="form-hint">
+                    超管账号只能登录后台 Web 页面，不能登录手机客户端
+                </div>
+            </div>
+
+            <div class="form-row" style="margin-top:24px;">
+                <a href="/admin" class="btn">取消</a>
+                <button class="btn btn-primary" type="submit">
+                    {{ '保存修改' if mode == 'edit' else '创建用户' }}
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

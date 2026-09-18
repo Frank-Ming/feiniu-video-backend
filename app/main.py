@@ -9,9 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Iterator, List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from .config import CONFIG
 from .scanner import scanner, filter_items, probe_duration, _get_ffprobe
@@ -45,6 +47,26 @@ app.add_middleware(
 )
 
 
+# ---------- Web 后台（HTML 模板） ----------
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _fmt_time_short(ts: float) -> str:
+    """把 unix 时间戳格式化成易读字符串"""
+    if not ts:
+        return "—"
+    import datetime as _dt
+    dt = _dt.datetime.fromtimestamp(ts)
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["fmt_time"] = _fmt_time_short
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
 # 注：扩展名 fallback；流式响应时优先用 ffprobe 异步探测真实 MIME（带内存缓存）
 VIDEO_EXT_TO_MIME = {
     ".mp4": "video/mp4",
@@ -73,6 +95,13 @@ async def require_user(authorization: Optional[str] = Header(None)) -> str:
     username = await current_user(authorization)
     if not username:
         raise HTTPException(status_code=401, detail="未登录")
+    return username
+
+
+async def require_admin(username: str = Depends(require_user)) -> str:
+    """超管守卫：要求 token 是有效且 is_admin=True 的用户"""
+    if not user_store.is_admin(username):
+        raise HTTPException(status_code=403, detail="需要超管权限")
     return username
 
 
@@ -109,7 +138,11 @@ def register(payload: dict):
     if not user:
         raise HTTPException(status_code=400, detail="用户名已存在或密码过短")
     token = user_store.login(username, password)
-    return {"token": token, "username": username}
+    return {
+        "token": token,
+        "username": username,
+        "is_admin": user.is_admin,
+    }
 
 
 @app.post("/api/auth/login")
@@ -119,7 +152,11 @@ def login(payload: dict):
     token = user_store.login(username, password)
     if not token:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    return {"token": token, "username": username}
+    return {
+        "token": token,
+        "username": username,
+        "is_admin": user_store.is_admin(username),
+    }
 
 
 @app.post("/api/auth/logout")
@@ -135,8 +172,267 @@ def me(username: str = Depends(current_user)):
     if not username:
         return {"username": None}
     user = user_store.users.get(username)
-    created_at = user.created_at if user else None
-    return {"username": username, "created_at": created_at}
+    return {
+        "username": username,
+        "created_at": user.created_at if user else None,
+        "is_admin": user.is_admin if user else False,
+        "last_login_at": user.last_login_at if user else None,
+    }
+
+
+# ---------- Web 后台（页面 + JSON API） ----------
+# 用 cookie（httpOnly）保存超管 token；客户端无法访问，更安全
+ADMIN_COOKIE_NAME = "feiniu_admin"
+
+
+def _admin_from_cookie(request: Request) -> Optional[str]:
+    """从 cookie 取出超管 token，验证通过则返回 username"""
+    token = request.cookies.get(ADMIN_COOKIE_NAME)
+    if not token:
+        return None
+    username = user_store.whoami(token)
+    if not username or not user_store.is_admin(username):
+        return None
+    return username
+
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/", response_class=HTMLResponse)
+def admin_index(request: Request):
+    """后台首页：用户列表"""
+    admin = _admin_from_cookie(request)
+    if not admin:
+        return RedirectResponse(url="/admin/login", status_code=303)
+    users = user_store.list_users()
+    # 按创建时间倒序
+    users.sort(key=lambda u: u.get("created_at") or 0, reverse=True)
+    return templates.TemplateResponse(
+        request,
+        "users_list.html",
+        {"admin": admin, "users": users, "current_admin": admin},
+    )
+
+
+@app.get("/admin/login", response_class=HTMLResponse)
+def admin_login_page(request: Request, error: Optional[str] = None,
+                     next: Optional[str] = None):
+    """后台登录页"""
+    if _admin_from_cookie(request):
+        return RedirectResponse(url="/admin", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"error": error, "next": next or "/admin"},
+    )
+
+
+@app.post("/admin/login")
+def admin_login_submit(request: Request,
+                        username: str = Form(...),
+                        password: str = Form(...),
+                        next: str = Form(default="/admin")):
+    """后台登录提交"""
+    token = user_store.login(username.strip(), password)
+    if not token:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": "账号或密码错误", "next": next},
+            status_code=401,
+        )
+    if not user_store.is_admin(username.strip()):
+        # 不是超管 → 清掉这个 token 不让他用客户端 / 后台
+        user_store.logout(token)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": "此账号不是超管，无权访问后台", "next": next},
+            status_code=403,
+        )
+    # 成功：设 cookie + 跳转
+    target = next if next.startswith("/") else "/admin"
+    resp = RedirectResponse(url=target, status_code=303)
+    resp.set_cookie(
+        ADMIN_COOKIE_NAME,
+        token,
+        max_age=60 * 60 * 24 * 30,  # 30 天
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+@app.post("/admin/logout")
+def admin_logout(request: Request):
+    token = request.cookies.get(ADMIN_COOKIE_NAME)
+    if token:
+        user_store.logout(token)
+    resp = RedirectResponse(url="/admin/login", status_code=303)
+    resp.delete_cookie(ADMIN_COOKIE_NAME, path="/")
+    return resp
+
+
+# ---------- 用户 CRUD（Web 页面） ----------
+@app.get("/admin/users/new", response_class=HTMLResponse)
+def admin_user_new_page(request: Request, error: Optional[str] = None):
+    if not _admin_from_cookie(request):
+        return RedirectResponse(url="/admin/login", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "user_form.html",
+        {
+            "admin": _admin_from_cookie(request),
+            "mode": "new",
+            "user": None,
+            "error": error,
+        },
+    )
+
+
+@app.post("/admin/users/new")
+def admin_user_new_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    is_admin: Optional[str] = Form(default=None),
+):
+    if not _admin_from_cookie(request):
+        return RedirectResponse(url="/admin/login", status_code=303)
+    is_admin_flag = (is_admin or "") == "on"
+    user = user_store.admin_create_user(username.strip(), password, is_admin=is_admin_flag)
+    if not user:
+        return templates.TemplateResponse(
+            request,
+            "user_form.html",
+            {
+                "admin": _admin_from_cookie(request),
+                "mode": "new",
+                "user": None,
+                "error": "用户名已存在或密码长度不足 4 位",
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.get("/admin/users/{username}/edit", response_class=HTMLResponse)
+def admin_user_edit_page(request: Request, username: str,
+                          error: Optional[str] = None):
+    if not _admin_from_cookie(request):
+        return RedirectResponse(url="/admin/login", status_code=303)
+    user = user_store.get_user(username)
+    if not user:
+        return RedirectResponse(url="/admin", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "user_form.html",
+        {
+            "admin": _admin_from_cookie(request),
+            "mode": "edit",
+            "user": {
+                "username": user.username,
+                "is_admin": user.is_admin,
+                "created_at": user.created_at,
+                "last_login_at": user.last_login_at,
+            },
+            "error": error,
+        },
+    )
+
+
+@app.post("/admin/users/{username}/edit")
+def admin_user_edit_submit(
+    request: Request,
+    username: str,
+    password: str = Form(default=""),
+    is_admin: Optional[str] = Form(default=None),
+):
+    if not _admin_from_cookie(request):
+        return RedirectResponse(url="/admin/login", status_code=303)
+    new_password = password.strip() if password else None
+    is_admin_flag = (is_admin or "") == "on"
+    ok = user_store.admin_update_user(
+        username,
+        new_password=new_password,
+        is_admin=is_admin_flag,
+    )
+    if not ok and new_password is not None:
+        return templates.TemplateResponse(
+            request,
+            "user_form.html",
+            {
+                "admin": _admin_from_cookie(request),
+                "mode": "edit",
+                "user": user_store.get_user(username),
+                "error": "修改失败（密码长度不足 4 位？）",
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/users/{username}/delete")
+def admin_user_delete_submit(request: Request, username: str,
+                             confirm: str = Form(default="")):
+    if not _admin_from_cookie(request):
+        return RedirectResponse(url="/admin/login", status_code=303)
+    current_admin = _admin_from_cookie(request)
+    if username == current_admin:
+        return templates.TemplateResponse(
+            request,
+            "users_list.html",
+            {
+                "admin": current_admin,
+                "users": user_store.list_users(),
+                "error": "不能删除自己的账号",
+                "current_admin": current_admin,
+            },
+            status_code=400,
+        )
+    user_store.admin_delete_user(username)
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# ---------- 超管 JSON API（给外部脚本用） ----------
+@app.get("/api/admin/users")
+def api_admin_list_users(_admin: str = Depends(require_admin)):
+    return {"users": user_store.list_users()}
+
+
+@app.post("/api/admin/users")
+def api_admin_create_user(payload: dict,
+                          _admin: str = Depends(require_admin)):
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    is_admin = bool(payload.get("is_admin", False))
+    user = user_store.admin_create_user(username, password, is_admin=is_admin)
+    if not user:
+        raise HTTPException(status_code=400, detail="用户名已存在或密码过短")
+    return {"username": user.username, "is_admin": user.is_admin}
+
+
+@app.patch("/api/admin/users/{username}")
+def api_admin_update_user(username: str, payload: dict,
+                           _admin: str = Depends(require_admin)):
+    ok = user_store.admin_update_user(
+        username,
+        new_password=payload.get("password"),
+        is_admin=payload.get("is_admin"),
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail="修改失败（密码过短或用户不存在）")
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{username}")
+def api_admin_delete_user(username: str,
+                           _admin: str = Depends(require_admin)):
+    if username == _admin:
+        raise HTTPException(status_code=400, detail="不能删除自己的账号")
+    if not user_store.admin_delete_user(username):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"ok": True}
 
 
 # ---------- 视频 ----------
