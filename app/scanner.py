@@ -433,6 +433,26 @@ class VideoScanner:
                 return v
         return None
 
+    def delete_video(self, video_id: str) -> bool:
+        """删除一个视频文件并从内存/磁盘缓存中移除。返回是否成功。"""
+        item = self.get_by_id(video_id)
+        if item is None:
+            return False
+        try:
+            p = Path(item.full_path)
+            if p.exists():
+                p.unlink()
+        except Exception:
+            return False
+        # 从内存 cache 移除
+        self._cache = [v for v in self._cache if v.id != video_id]
+        # 落盘
+        try:
+            self._save_disk_cache(self._cache)
+        except Exception:
+            pass
+        return True
+
     def list_dirs(self) -> List[Dict]:
         counter: Dict[str, int] = {}
         for v in self.list_videos():
@@ -443,14 +463,23 @@ class VideoScanner:
 
     def pick_random(self, max_size_bytes: int = 200 * 1024 * 1024,
                     exclude_ids: Optional[List[str]] = None,
-                    only_series_id: Optional[str] = None) -> Optional[VideoItem]:
-        """随机选一个视频。优先选 size <= max_size_bytes 的；可选排除/限定。"""
+                    only_series_id: Optional[str] = None,
+                    only_first_episode: bool = False) -> Optional[VideoItem]:
+        """随机选一个视频。优先选 size <= max_size_bytes 的；可选排除/限定。
+
+        only_first_episode=True 时只挑非 series 或 episode_no==1 的视频，
+        避免用户随机时刷到短剧的中间集。
+        """
         import random
         pool = self.list_videos()
         if exclude_ids:
-            pool = [v for v in pool if v.id not in set(exclude_ids)]
+            excl = set(exclude_ids)
+            pool = [v for v in pool if v.id not in excl]
         if only_series_id:
             pool = [v for v in pool if v.series_id == only_series_id]
+        if only_first_episode:
+            pool = [v for v in pool
+                    if (not v.is_series) or v.episode_no <= 1]
         small = [v for v in pool if v.size <= max_size_bytes]
         if small:
             return random.choice(small)

@@ -68,6 +68,19 @@
                 </div>
             </div>
 
+            {% if mode == 'edit' %}
+            <div class="form-group">
+                <label class="form-check">
+                    <input type="checkbox" name="can_delete"
+                           {% if user and user.can_delete %}checked{% endif %}>
+                    <span>允许客户端删除视频</span>
+                </label>
+                <div class="form-hint">
+                    开启后该用户可在手机客户端"不喜欢"时直接删除当前播放的视频文件
+                </div>
+            </div>
+            {% endif %}
+
             <div class="form-row" style="margin-top:24px;">
                 <a href="/admin" class="btn">取消</a>
                 <button class="btn btn-primary" type="submit">

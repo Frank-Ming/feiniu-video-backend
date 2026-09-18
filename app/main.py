@@ -348,15 +348,18 @@ def admin_user_edit_submit(
     username: str,
     password: str = Form(default=""),
     is_admin: Optional[str] = Form(default=None),
+    can_delete: Optional[str] = Form(default=None),
 ):
     if not _admin_from_cookie(request):
         return RedirectResponse(url="/admin/login", status_code=303)
     new_password = password.strip() if password else None
     is_admin_flag = (is_admin or "") == "on"
+    can_delete_flag = (can_delete or "") == "on"
     ok = user_store.admin_update_user(
         username,
         new_password=new_password,
         is_admin=is_admin_flag,
+        can_delete=can_delete_flag,
     )
     if not ok and new_password is not None:
         return templates.TemplateResponse(
@@ -512,6 +515,29 @@ async def get_video(video_id: str):
     return item.to_dict()
 
 
+@app.delete("/api/videos/{video_id}")
+async def delete_video(video_id: str,
+                        username: str = Depends(require_user)):
+    """删除一个视频文件。需要 can_delete 权限。
+    超管始终允许；普通用户的 can_delete 标志由超管在后台授予。
+    """
+    if not user_store.user_can_delete(username):
+        raise HTTPException(status_code=403, detail="没有删除权限")
+    if not scanner.delete_video(video_id):
+        raise HTTPException(status_code=404, detail="视频不存在或删除失败")
+    # 同时清理可能存在的转码缓存
+    try:
+        from .transcoder import transcoder
+        cached = transcoder.transcoded_path(video_id)
+        if cached and cached.exists():
+            cached.unlink()
+        # 取消可能正在跑的转码任务
+        transcoder.cancel(video_id)
+    except Exception:
+        pass
+    return {"ok": True}
+
+
 @app.get("/api/random")
 async def pick_random(
     max_size_mb: int = Query(200, ge=1, le=10240,
@@ -520,6 +546,8 @@ async def pick_random(
                                           description="要排除的视频 id 列表"),
     series_id: Optional[str] = Query(None,
                                      description="限定在某个短剧内随机（自动连播下一集时用）"),
+    only_first_episode: bool = Query(False,
+                                       description="True 时只选非 series 或 episode_no==1 的视频"),
     username: str = Depends(current_user),   # 不强制登录，但登录后可避免随机到「不感兴趣」的
 ):
     """登录后随机挑一个视频；要求文件 < max_size_mb 以保证加载快"""
@@ -529,6 +557,7 @@ async def pick_random(
         max_size_bytes=max_size_mb * 1024 * 1024,
         exclude_ids=exclude,
         only_series_id=series_id,
+        only_first_episode=only_first_episode,
     )
     if not item:
         raise HTTPException(status_code=404, detail="no videos available")

@@ -46,6 +46,7 @@ class User:
     created_at: float
     is_admin: bool = False
     last_login_at: float = 0.0
+    can_delete: bool = False  # 客户端是否有删除视频权限
     # 用户偏好（每用户独立的播放设置）
     default_speed: float = 1.0
     default_volume: float = 1.0
@@ -74,6 +75,7 @@ class UserStore:
                         "created_at": u.get("created_at", 0.0),
                         "is_admin": bool(u.get("is_admin", False)),
                         "last_login_at": u.get("last_login_at", 0.0),
+                        "can_delete": bool(u.get("can_delete", False)),
                         "default_speed": u.get("default_speed", 1.0),
                         "default_volume": u.get("default_volume", 1.0),
                     })
@@ -98,10 +100,12 @@ class UserStore:
         try:
             self._create_user_internal(SEED_ADMIN_USERNAME, SEED_ADMIN_PASSWORD,
                                         is_admin=True)
-            self._create_user_internal(SEED_USER_USERNAME, SEED_USER_PASSWORD,
-                                        is_admin=False)
+            # Frank 默认给删除视频权限（用户希望快速浏览时不喜欢的直接删）
+            frank = self._create_user_internal(
+                SEED_USER_USERNAME, SEED_USER_PASSWORD, is_admin=False)
+            frank.can_delete = True
             self._save_users()
-            log.info("已创建种子账号: %s (超管), %s (普通用户)",
+            log.info("已创建种子账号: %s (超管), %s (普通用户，可删除视频)",
                      SEED_ADMIN_USERNAME, SEED_USER_USERNAME)
         except Exception as e:
             log.error("种子账号创建失败: %s", e)
@@ -157,6 +161,7 @@ class UserStore:
                 "created_at": u.created_at,
                 "is_admin": u.is_admin,
                 "last_login_at": u.last_login_at,
+                "can_delete": u.can_delete,
             }
             for u in self.users.values()
         ]
@@ -167,6 +172,15 @@ class UserStore:
     def is_admin(self, username: str) -> bool:
         u = self.users.get(username)
         return u.is_admin if u else False
+
+    def user_can_delete(self, username: str) -> bool:
+        """普通用户：返回 can_delete 标志；超管：永远 True"""
+        u = self.users.get(username)
+        if not u:
+            return False
+        if u.is_admin:
+            return True
+        return u.can_delete
 
     def _create_user_internal(self, username: str, password: str,
                                is_admin: bool = False) -> User:
@@ -213,8 +227,9 @@ class UserStore:
 
     def admin_update_user(self, username: str,
                            new_password: Optional[str] = None,
-                           is_admin: Optional[bool] = None) -> bool:
-        """超管修改用户：重置密码 / 切换超管标志。"""
+                           is_admin: Optional[bool] = None,
+                           can_delete: Optional[bool] = None) -> bool:
+        """超管修改用户：重置密码 / 切换超管标志 / 切换删除权限。"""
         u = self.users.get(username)
         if not u:
             return False
@@ -227,6 +242,9 @@ class UserStore:
             changed = True
         if is_admin is not None and is_admin != u.is_admin:
             u.is_admin = is_admin
+            changed = True
+        if can_delete is not None and can_delete != u.can_delete:
+            u.can_delete = can_delete
             changed = True
         if changed:
             self._save_users()
