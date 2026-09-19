@@ -41,7 +41,12 @@ async def lifespan(app: FastAPI):
     # 关闭时无需特殊处理
 
 
-app = FastAPI(title="飞牛短视频后端", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="飞牛短视频后端", version="6.3", lifespan=lifespan)
+
+# 后端版本号 (跟 git tag 一致),前端可以查这个判断是否需要更新
+BACKEND_VERSION = "6.3"
+# API 协议版本:不兼容的协议变更时 +1
+API_VERSION = "6"
 
 app.add_middleware(
     CORSMiddleware,
@@ -114,9 +119,34 @@ async def require_admin(username: str = Depends(require_user)) -> str:
 def health():
     return {
         "status": "ok",
+        "version": BACKEND_VERSION,
+        "api_version": API_VERSION,
         "root": str(scanner.root),
         "scanning": scanner.is_scanning,
         "cache_size": len(scanner.list_videos()),
+    }
+
+
+@app.get("/api/version")
+def version():
+    """版本信息接口:前端启动时调用,判断后端是否最新
+    返回:
+      version: 字符串版本号,例如 "6.3"
+      api_version: API 协议版本,不兼容变更时递增
+      min_client_version: 该后端要求的最低客户端版本(低于这个的手机版需要提示升级)
+      features: 该版本启用的特性列表(前端可以判断要不要展示对应 UI)
+    """
+    return {
+        "version": BACKEND_VERSION,
+        "api_version": API_VERSION,
+        "min_client_version": "1.0.0",
+        "features": [
+            "random_recommend",
+            "series_detect",
+            "can_delete",
+            "transcoder",
+            "fvp_compat",  # 客户端如果没装 fvp 会用 video_player
+        ],
     }
 
 
