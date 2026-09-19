@@ -1,17 +1,13 @@
 """转码器测试：用 monkeypatch 模拟 ffmpeg 调用。
 不依赖真实 ffmpeg 二进制（避免测试环境缺失）。
 """
-import os
 import time
-import sys
-import threading
-from pathlib import Path
 
 import pytest
 
-from app import transcoder as tc_mod
 from app import scanner as scanner_mod
-from app.transcoder import Transcoder, TaskStatus
+from app import transcoder as tc_mod
+from app.transcoder import TaskStatus, Transcoder
 
 
 # ---------- fixtures ----------
@@ -31,8 +27,8 @@ def trans(monkeypatch, tmp_path):
 @pytest.fixture
 def fresh_app(monkeypatch, tmp_path):
     """重新初始化 user_store 到 tmp_path，避免污染全局"""
-    from app import users as users_mod
     from app import main as main_mod
+    from app import users as users_mod
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     monkeypatch.setattr(users_mod, "DATA_DIR", data_dir, raising=False)
@@ -140,7 +136,6 @@ def test_actual_ffmpeg_run_succeeds(monkeypatch, tmp_path):
     trans._cache_dir.mkdir(parents=True, exist_ok=True)
 
     # mock _run_ffmpeg：直接生成 DONE task
-    from app.transcoder import TranscodeTask
     def fake_run(self, video_id, task):
         out = trans._output_path(video_id)
         out.write_bytes(b"x" * 100)

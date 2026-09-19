@@ -13,15 +13,12 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import subprocess
 import time
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from .config import CONFIG
-
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +32,13 @@ class VideoItem:
     size: int
     mtime: float
     dir: str = ""
-    duration: Optional[float] = None    # 懒探测，可能为 None
+    duration: float | None = None    # 懒探测，可能为 None
     # 短剧元数据
     is_series: bool = False
     series_id: str = ""        # 同一部短剧的所有视频共用同一个 id
     episode_no: int = 0        # 当前集数（1 开始；非短剧为 0）
     series_count: int = 0     # 同剧总集数（仅 is_series 时有效）
-    siblings: List[str] = field(default_factory=list)  # 同剧全部 id（按集数排序）
+    siblings: list[str] = field(default_factory=list)  # 同剧全部 id（按集数排序）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -50,7 +47,7 @@ class VideoItem:
 # ---------------------------------------------------------------------------
 # ffprobe
 # ---------------------------------------------------------------------------
-_FFPROBE_BIN: Optional[str] = None
+_FFPROBE_BIN: str | None = None
 
 
 def _cn_num(s: str) -> int:
@@ -77,7 +74,7 @@ def _cn_num(s: str) -> int:
     return total
 
 
-def _get_ffprobe() -> Optional[str]:
+def _get_ffprobe() -> str | None:
     global _FFPROBE_BIN
     if _FFPROBE_BIN is not None:
         return _FFPROBE_BIN
@@ -95,7 +92,7 @@ def _get_ffprobe() -> Optional[str]:
     return _FFPROBE_BIN
 
 
-def probe_duration(path: Path) -> Optional[float]:
+def probe_duration(path: Path) -> float | None:
     """探测视频时长（秒）。失败返回 None。"""
     bin_path = _get_ffprobe()
     if bin_path is None:
@@ -132,10 +129,10 @@ def probe_duration(path: Path) -> Optional[float]:
 # ---------------------------------------------------------------------------
 class VideoScanner:
     def __init__(self,
-                 root: Optional[str] = None,
-                 extensions: Optional[List[str]] = None,
-                 recursive: Optional[bool] = None,
-                 cache_ttl: Optional[int] = None):
+                 root: str | None = None,
+                 extensions: list[str] | None = None,
+                 recursive: bool | None = None,
+                 cache_ttl: int | None = None):
         self.root = Path(root or CONFIG.video.root).expanduser().resolve()
         self.extensions = tuple(e.lower() for e in (extensions or CONFIG.video.extensions))
         self.recursive = bool(CONFIG.video.recursive if recursive is None else recursive)
@@ -147,10 +144,10 @@ class VideoScanner:
         self.cache_file = self.cache_dir / "videos.json"
         self.state_file = self.cache_dir / "scan_state.json"
 
-        self._cache: List[VideoItem] = []
+        self._cache: list[VideoItem] = []
         self._cache_time: float = 0.0
         self._scan_lock = asyncio.Lock()
-        self._scan_task: Optional[asyncio.Task] = None
+        self._scan_task: asyncio.Task | None = None
         self._scanning: bool = False
 
     @staticmethod
@@ -158,7 +155,7 @@ class VideoScanner:
         return hashlib.md5(str(path).encode("utf-8")).hexdigest()[:16]
 
     # ---- 持久化缓存 ----
-    def _load_disk_cache(self) -> List[VideoItem]:
+    def _load_disk_cache(self) -> list[VideoItem]:
         if not self.cache_file.exists():
             return []
         try:
@@ -168,7 +165,7 @@ class VideoScanner:
             logger.warning("读取缓存失败: %s", e)
             return []
 
-    def _save_disk_cache(self, items: List[VideoItem]) -> None:
+    def _save_disk_cache(self, items: list[VideoItem]) -> None:
         try:
             self.cache_file.write_text(
                 json.dumps([asdict(i) for i in items], ensure_ascii=False),
@@ -177,7 +174,7 @@ class VideoScanner:
         except Exception as e:
             logger.warning("写缓存失败: %s", e)
 
-    def _root_signature(self) -> Optional[dict]:
+    def _root_signature(self) -> dict | None:
         """对根目录算一个轻量签名（mtime + 文件计数 + 子目录 mtime 之和）"""
         try:
             st = self.root.stat()
@@ -200,7 +197,7 @@ class VideoScanner:
         except Exception:
             return None
 
-    def _load_signature(self) -> Optional[dict]:
+    def _load_signature(self) -> dict | None:
         if not self.state_file.exists():
             return None
         try:
@@ -259,10 +256,10 @@ class VideoScanner:
             finally:
                 self._scanning = False
 
-    def _scan_sync(self) -> List[VideoItem]:
+    def _scan_sync(self) -> list[VideoItem]:
         if not self.root.exists():
             return []
-        files: List[Path] = []
+        files: list[Path] = []
         if self.recursive:
             for p in self.root.rglob("*"):
                 if p.is_file() and p.suffix.lower() in self.extensions:
@@ -272,7 +269,7 @@ class VideoScanner:
                 if p.is_file() and p.suffix.lower() in self.extensions:
                     files.append(p)
 
-        items: List[VideoItem] = []
+        items: list[VideoItem] = []
         for fp in files:
             try:
                 st = fp.stat()
@@ -300,14 +297,14 @@ class VideoScanner:
         self._detect_series(items)
         return items
 
-    def _detect_series(self, items: List[VideoItem]) -> None:
+    def _detect_series(self, items: list[VideoItem]) -> None:
         """为每个视频计算短剧元数据。规则：
         1. 同目录下没有其他文件夹（避免与「电视剧/系列」混淆）
         2. 文件名是数字/集数（解析出 episode_no > 0）
         满足以上两条才算短剧；同目录下多个短剧视频归为同一部短剧。
         """
         from collections import defaultdict
-        groups: Dict[str, List[VideoItem]] = defaultdict(list)
+        groups: dict[str, list[VideoItem]] = defaultdict(list)
         for v in items:
             d = str(Path(v.full_path).parent)
             groups[d].append(v)
@@ -317,7 +314,7 @@ class VideoScanner:
             if not parent.exists() or self._sibling_has_subdir(parent):
                 continue
 
-            parsed: List[Tuple[VideoItem, int]] = []
+            parsed: list[tuple[VideoItem, int]] = []
             for v in group:
                 ep = self._parse_episode_no(v.name)
                 if ep > 0:
@@ -326,7 +323,7 @@ class VideoScanner:
                 continue
 
             # 去重：同一集数保留名字最「纯」的那个（中文「第N集」/「EPxx」> 纯数字）
-            by_ep: Dict[int, List[VideoItem]] = {}
+            by_ep: dict[int, list[VideoItem]] = {}
             for v, ep in parsed:
                 by_ep.setdefault(ep, []).append(v)
 
@@ -340,7 +337,7 @@ class VideoScanner:
                     return 2
                 return 3
 
-            deduped: List[VideoItem] = []
+            deduped: list[VideoItem] = []
             for ep in sorted(by_ep.keys()):
                 vs = sorted(by_ep[ep], key=lambda x: _purity(x.name))
                 deduped.append(vs[0])
@@ -354,7 +351,7 @@ class VideoScanner:
             except ValueError:
                 rel_dir = dir_path
             series_id = hashlib.md5(
-                f"series:{rel_dir}".encode("utf-8")
+                f"series:{rel_dir}".encode()
             ).hexdigest()[:16]
             ids = [v.id for v in deduped]
             for v in deduped:
@@ -397,7 +394,7 @@ class VideoScanner:
         return False
 
     # ---- 对外 API ----
-    def list_videos(self) -> List[VideoItem]:
+    def list_videos(self) -> list[VideoItem]:
         """同步获取列表（不触发扫描，只取缓存）"""
         if not self._cache:
             disk = self._load_disk_cache()
@@ -414,7 +411,7 @@ class VideoScanner:
             # 兜底同步扫一次（仅用于冷启动空缓存）
             await self._scan_async()
 
-    async def probe_duration_async(self, video_id: str) -> Optional[float]:
+    async def probe_duration_async(self, video_id: str) -> float | None:
         """按 id 探测时长（写入缓存，不阻塞）"""
         for v in self._cache:
             if v.id == video_id:
@@ -427,7 +424,7 @@ class VideoScanner:
                 return d
         return None
 
-    def get_by_id(self, video_id: str) -> Optional[VideoItem]:
+    def get_by_id(self, video_id: str) -> VideoItem | None:
         for v in self.list_videos():
             if v.id == video_id:
                 return v
@@ -453,8 +450,8 @@ class VideoScanner:
             pass
         return True
 
-    def list_dirs(self) -> List[Dict]:
-        counter: Dict[str, int] = {}
+    def list_dirs(self) -> list[dict]:
+        counter: dict[str, int] = {}
         for v in self.list_videos():
             d = v.dir or "(根目录)"
             counter[d] = counter.get(d, 0) + 1
@@ -462,9 +459,9 @@ class VideoScanner:
                 sorted(counter.items(), key=lambda x: -x[1])]
 
     def pick_random(self, max_size_bytes: int = 200 * 1024 * 1024,
-                    exclude_ids: Optional[List[str]] = None,
-                    only_series_id: Optional[str] = None,
-                    only_first_episode: bool = False) -> Optional[VideoItem]:
+                    exclude_ids: list[str] | None = None,
+                    only_series_id: str | None = None,
+                    only_first_episode: bool = False) -> VideoItem | None:
         """随机选一个视频。优先选 size <= max_size_bytes 的；可选排除/限定。
 
         only_first_episode=True 时只挑非 series 或 episode_no==1 的视频，
@@ -492,11 +489,11 @@ class VideoScanner:
 scanner = VideoScanner()
 
 
-def filter_items(items: List[VideoItem],
-                 dirs: Optional[List[str]] = None,
-                 max_seconds: Optional[float] = None,
-                 min_seconds: Optional[float] = None,
-                 require_duration: bool = False) -> List[VideoItem]:
+def filter_items(items: list[VideoItem],
+                 dirs: list[str] | None = None,
+                 max_seconds: float | None = None,
+                 min_seconds: float | None = None,
+                 require_duration: bool = False) -> list[VideoItem]:
     """按子文件夹 + 时长筛选"""
     result = items
     if dirs:

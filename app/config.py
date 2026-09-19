@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List
 
 import yaml
 from pydantic import BaseModel
@@ -16,7 +15,7 @@ class ServerConfig(BaseModel):
 
 class VideoConfig(BaseModel):
     root: str = "/vol1/1000/视频/H"
-    extensions: List[str] = [".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".flv", ".ts"]
+    extensions: list[str] = [".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".flv", ".ts"]
     recursive: bool = True
     cache_ttl: int = 30
     # 是否扫描时探测视频时长（首次扫描会更慢，但能让手机端按时长筛选）

@@ -1,0 +1,17 @@
+# Ruff 配置：FastAPI 项目，常见 FastAPI 推荐写法会被误报
+line-length = 100
+target-version = "py310"
+
+[lint]
+# BLE001：fastapi 路由里大量 try/except 吞异常是合理的（不影响响应）
+# B008：FastAPI Query/Depends 在参数默认值里调用是官方推荐写法
+# S110：try/except/pass 在取消转码任务时是允许的
+# DTZ006：部分时间戳格式化为本地字符串，无时区语义
+# PLW1510：subprocess.run 仅探测输出，无需 check
+# SIM102：嵌套 if 在调试时分支更清晰
+# ISC004：FFmpeg 命令字符串拼接故意为之
+ignore = ["BLE001", "B008", "S110", "DTZ006", "PLW1510", "SIM102", "ISC004"]
+
+[lint.per-file-ignores]
+# 测试文件允许未使用变量
+"tests/*" = ["F841"]

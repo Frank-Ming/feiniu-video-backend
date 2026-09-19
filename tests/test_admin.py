@@ -3,12 +3,6 @@
 策略：用 FastAPI TestClient 启动 app；把 user_store / DATA_DIR 替换为临时目录，
 避免污染真实 data/。每个 case 后清理临时目录。
 """
-import os
-import sys
-import shutil
-import tempfile
-import importlib
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,7 +17,6 @@ def tmp_data_dir(monkeypatch, tmp_path):
     # 必须先 import app 包才会触发 users.py 顶层 user_store = UserStore()
     # 但 users.py 一加载就把 DATA_DIR 写死了。我们直接 patch DATA_DIR 和 users.USERS_FILE 等。
     from app import users as users_mod
-    from app import config as config_mod
 
     # patch 几个路径常量
     monkeypatch.setattr(users_mod, "DATA_DIR", data_dir, raising=False)
@@ -46,8 +39,8 @@ def client(tmp_data_dir):
     # main.py 在 import 时已经初始化了 user_store = UserStore()
     # 上面的 fixture 已经 patch 了路径和清了 store，但 user_store 实例本身的属性还指向旧文件
     # 我们直接重新创建 user_store 实例，并重新 patch 进 main 模块
-    from app import users as users_mod
     from app import main as main_mod
+    from app import users as users_mod
 
     # 用新实例替换
     new_store = users_mod.UserStore()
@@ -199,13 +192,11 @@ def test_admin_cannot_delete_self(client):
     assert r.status_code == 400
     assert "不能删除自己" in r.text
     # www 还在
-    from app import users as users_mod
     from app import main as main_mod
     assert "www" in main_mod.user_store.users
 
 
 def test_admin_can_delete_user_cascades_history(client):
-    from app import users as users_mod
     from app import main as main_mod
     _admin_login(client)
 

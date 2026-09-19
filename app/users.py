@@ -14,10 +14,8 @@ import json
 import logging
 import secrets
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
-
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +32,7 @@ SEED_USER_PASSWORD = "1qaz1QAZ"
 
 
 def _hash_pwd(password: str, salt: str) -> str:
-    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
 
 
 @dataclass
@@ -54,9 +52,9 @@ class User:
 
 class UserStore:
     def __init__(self):
-        self.users: Dict[str, User] = {}  # username -> User
-        self.sessions: Dict[str, str] = {}  # token -> username
-        self._history: Dict[str, List[dict]] = {}  # username -> list of records
+        self.users: dict[str, User] = {}  # username -> User
+        self.sessions: dict[str, str] = {}  # token -> username
+        self._history: dict[str, list[dict]] = {}  # username -> list of records
         self._load()
         self._seed_if_empty()
 
@@ -67,18 +65,7 @@ class UserStore:
                 raw = json.loads(USERS_FILE.read_text(encoding="utf-8"))
                 for u in raw.get("users", []):
                     # 兼容老数据：缺字段用 dataclass 默认值
-                    self.users[u["username"]] = User(**{
-                        "id": u.get("id") or secrets.token_hex(8),
-                        "username": u["username"],
-                        "salt": u.get("salt") or secrets.token_hex(8),
-                        "password_hash": u.get("password_hash", ""),
-                        "created_at": u.get("created_at", 0.0),
-                        "is_admin": bool(u.get("is_admin", False)),
-                        "last_login_at": u.get("last_login_at", 0.0),
-                        "can_delete": bool(u.get("can_delete", False)),
-                        "default_speed": u.get("default_speed", 1.0),
-                        "default_volume": u.get("default_volume", 1.0),
-                    })
+                    self.users[u["username"]] = User(id=u.get("id") or secrets.token_hex(8), username=u["username"], salt=u.get("salt") or secrets.token_hex(8), password_hash=u.get("password_hash", ""), created_at=u.get("created_at", 0.0), is_admin=bool(u.get("is_admin", False)), last_login_at=u.get("last_login_at", 0.0), can_delete=bool(u.get("can_delete", False)), default_speed=u.get("default_speed", 1.0), default_volume=u.get("default_volume", 1.0))
             except Exception as e:
                 log.warning("加载 users.json 失败: %s", e)
                 self.users = {}
@@ -154,7 +141,7 @@ class UserStore:
             log.warning("保存 history_%s.json 失败: %s", username, e)
 
     # ---------- 用户 CRUD ----------
-    def list_users(self) -> List[dict]:
+    def list_users(self) -> list[dict]:
         return [
             {
                 "username": u.username,
@@ -166,7 +153,7 @@ class UserStore:
             for u in self.users.values()
         ]
 
-    def get_user(self, username: str) -> Optional[User]:
+    def get_user(self, username: str) -> User | None:
         return self.users.get(username)
 
     def is_admin(self, username: str) -> bool:
@@ -198,7 +185,7 @@ class UserStore:
         return user
 
     def register(self, username: str, password: str,
-                  is_admin: bool = False) -> Optional[User]:
+                  is_admin: bool = False) -> User | None:
         """公开注册入口（普通用户注册）。超管账号只能通过后台创建。"""
         username = username.strip()
         if not username or not password:
@@ -212,7 +199,7 @@ class UserStore:
         return user
 
     def admin_create_user(self, username: str, password: str,
-                           is_admin: bool = False) -> Optional[User]:
+                           is_admin: bool = False) -> User | None:
         """超管后台新增用户，允许任何合法字段值。"""
         username = (username or "").strip()
         if not username or not password:
@@ -226,9 +213,9 @@ class UserStore:
         return user
 
     def admin_update_user(self, username: str,
-                           new_password: Optional[str] = None,
-                           is_admin: Optional[bool] = None,
-                           can_delete: Optional[bool] = None) -> bool:
+                           new_password: str | None = None,
+                           is_admin: bool | None = None,
+                           can_delete: bool | None = None) -> bool:
         """超管修改用户：重置密码 / 切换超管标志 / 切换删除权限。"""
         u = self.users.get(username)
         if not u:
@@ -273,7 +260,7 @@ class UserStore:
         self._save_users()
         return True
 
-    def login(self, username: str, password: str) -> Optional[str]:
+    def login(self, username: str, password: str) -> str | None:
         u = self.users.get(username)
         if not u:
             return None
@@ -290,17 +277,17 @@ class UserStore:
         self.sessions.pop(token, None)
         self._save_sessions()
 
-    def whoami(self, token: str) -> Optional[str]:
+    def whoami(self, token: str) -> str | None:
         return self.sessions.get(token)
 
     # ---------- 观看记录 ----------
-    def list_history(self, username: str, limit: int = 200) -> List[dict]:
+    def list_history(self, username: str, limit: int = 200) -> list[dict]:
         return list(self._history.get(username, []))[:limit]
 
     def report_progress(self, username: str, video_id: str,
                         position: float, duration: float,
-                        name: Optional[str] = None,
-                        dir: Optional[str] = None):
+                        name: str | None = None,
+                        dir: str | None = None):
         """上报观看进度（按 video_id 合并，只留最新一条）"""
         if username not in self.users:
             return
@@ -328,7 +315,7 @@ class UserStore:
         self._history[username] = records
         self._save_history(username)
 
-    def get_progress(self, username: str, video_id: str) -> Optional[dict]:
+    def get_progress(self, username: str, video_id: str) -> dict | None:
         for r in self._history.get(username, []):
             if r["video_id"] == video_id:
                 return r

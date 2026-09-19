@@ -17,13 +17,11 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional
 
-from .scanner import scanner, _get_ffprobe
-
+from .scanner import _get_ffprobe, scanner
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +54,10 @@ class TranscodeTask:
     pid: int = 0                    # ffmpeg 子进程 pid
 
 
-def _get_ffmpeg_exe_local() -> Optional[str]:
+def _get_ffmpeg_exe_local() -> str | None:
     """拿到 ffmpeg（不只是 ffprobe）。优先 imageio_ffmpeg 自带的；否则 PATH 里的。"""
     if hasattr(_get_ffmpeg_exe_local, "_cached"):
-        return getattr(_get_ffmpeg_exe_local, "_cached")
+        return _get_ffmpeg_exe_local._cached
     try:
         import imageio_ffmpeg
         ffmpeg = (imageio_ffmpeg.get_ffmpeg_exe()
@@ -68,18 +66,18 @@ def _get_ffmpeg_exe_local() -> Optional[str]:
         result = str(ffmpeg) if ffmpeg else None
     except Exception:
         result = shutil.which("ffmpeg")
-    setattr(_get_ffmpeg_exe_local, "_cached", result)
+    _get_ffmpeg_exe_local._cached = result
     return result
 
 
-def _detect_vaapi(device: str = "/dev/dri/renderD128") -> Optional[str]:
+def _detect_vaapi(device: str = "/dev/dri/renderD128") -> str | None:
     """探测 VAAPI 设备路径；不存在返回 None。"""
     if not Path(device).exists():
         return None
     return device
 
 
-def _probe_video_codec(path: Path) -> Optional[str]:
+def _probe_video_codec(path: Path) -> str | None:
     """从 ffprobe -show_streams 里读 video 流的 codec_name。"""
     ffprobe = _get_ffprobe()
     if ffprobe is None:
@@ -112,12 +110,12 @@ class Transcoder:
     """
 
     def __init__(self):
-        self._tasks: Dict[str, TranscodeTask] = {}  # video_id -> task
-        self._active: Dict[str, threading.Thread] = {}
+        self._tasks: dict[str, TranscodeTask] = {}  # video_id -> task
+        self._active: dict[str, threading.Thread] = {}
         self._queue: list = []  # video_ids 等待启动
         self._lock = threading.Lock()
-        self._cache_dir: Optional[Path] = None
-        self._ffmpeg: Optional[str] = None
+        self._cache_dir: Path | None = None
+        self._ffmpeg: str | None = None
 
     # ---------- 路径 ----------
     def _ensure_cache_dir(self) -> Path:
@@ -136,14 +134,14 @@ class Transcoder:
         p = self._output_path(video_id)
         return p.exists() and p.stat().st_size > 0
 
-    def transcoded_path(self, video_id: str) -> Optional[Path]:
+    def transcoded_path(self, video_id: str) -> Path | None:
         p = self._output_path(video_id)
         if p.exists() and p.stat().st_size > 0:
             return p
         return None
 
     # ---------- 状态 ----------
-    def get_task(self, video_id: str) -> Optional[TranscodeTask]:
+    def get_task(self, video_id: str) -> TranscodeTask | None:
         with self._lock:
             t = self._tasks.get(video_id)
             return TranscodeTask(**asdict(t)) if t else None

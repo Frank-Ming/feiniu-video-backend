@@ -1,23 +1,27 @@
-"""FastAPI 主程序：扫描 + 流媒体 + 用户系统 + 观看记录"""
-from __future__ import annotations
-
+"""FastAPI 主程序：扫描 + 流媒体 + 用户系统 + 观看记录 + Web 后台 + 转码"""
+import datetime
 import json
 import logging
 import re
 import subprocess
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Iterator, List, Optional
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .config import CONFIG
-from .scanner import scanner, filter_items, probe_duration, _get_ffprobe
-from .transcoder import transcoder, TaskStatus
+from .scanner import _get_ffprobe, filter_items, scanner
+from .transcoder import transcoder
 from .users import user_store
 
 # ---- 日志 ----
@@ -57,8 +61,7 @@ def _fmt_time_short(ts: float) -> str:
     """把 unix 时间戳格式化成易读字符串"""
     if not ts:
         return "—"
-    import datetime as _dt
-    dt = _dt.datetime.fromtimestamp(ts)
+    dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
@@ -82,7 +85,7 @@ VIDEO_EXT_TO_MIME = {
 
 
 # ---------- 鉴权 ----------
-async def current_user(authorization: Optional[str] = Header(None)) -> Optional[str]:
+async def current_user(authorization: str | None = Header(None)) -> str | None:
     """从 Authorization: Bearer <token> 解析当前用户名；未登录返回 None"""
     if not authorization:
         return None
@@ -92,7 +95,7 @@ async def current_user(authorization: Optional[str] = Header(None)) -> Optional[
     return user_store.whoami(token)
 
 
-async def require_user(authorization: Optional[str] = Header(None)) -> str:
+async def require_user(authorization: str | None = Header(None)) -> str:
     username = await current_user(authorization)
     if not username:
         raise HTTPException(status_code=401, detail="未登录")
@@ -162,7 +165,7 @@ def login(payload: dict):
 
 @app.post("/api/auth/logout")
 def logout(username: str = Depends(require_user),
-           authorization: Optional[str] = Header(None)):
+           authorization: str | None = Header(None)):
     if authorization and authorization.lower().startswith("bearer "):
         user_store.logout(authorization[7:].strip())
     return {"ok": True}
@@ -178,6 +181,7 @@ def me(username: str = Depends(current_user)):
         "created_at": user.created_at if user else None,
         "is_admin": user.is_admin if user else False,
         "last_login_at": user.last_login_at if user else None,
+        "can_delete": user_store.user_can_delete(username),
     }
 
 
@@ -186,7 +190,7 @@ def me(username: str = Depends(current_user)):
 ADMIN_COOKIE_NAME = "feiniu_admin"
 
 
-def _admin_from_cookie(request: Request) -> Optional[str]:
+def _admin_from_cookie(request: Request) -> str | None:
     """从 cookie 取出超管 token，验证通过则返回 username"""
     token = request.cookies.get(ADMIN_COOKIE_NAME)
     if not token:
@@ -215,8 +219,8 @@ def admin_index(request: Request):
 
 
 @app.get("/admin/login", response_class=HTMLResponse)
-def admin_login_page(request: Request, error: Optional[str] = None,
-                     next: Optional[str] = None):
+def admin_login_page(request: Request, error: str | None = None,
+                     next: str | None = None):
     """后台登录页"""
     if _admin_from_cookie(request):
         return RedirectResponse(url="/admin", status_code=303)
@@ -276,7 +280,7 @@ def admin_logout(request: Request):
 
 # ---------- 用户 CRUD（Web 页面） ----------
 @app.get("/admin/users/new", response_class=HTMLResponse)
-def admin_user_new_page(request: Request, error: Optional[str] = None):
+def admin_user_new_page(request: Request, error: str | None = None):
     if not _admin_from_cookie(request):
         return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(
@@ -296,7 +300,7 @@ def admin_user_new_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    is_admin: Optional[str] = Form(default=None),
+    is_admin: str | None = Form(default=None),
 ):
     if not _admin_from_cookie(request):
         return RedirectResponse(url="/admin/login", status_code=303)
@@ -319,7 +323,7 @@ def admin_user_new_submit(
 
 @app.get("/admin/users/{username}/edit", response_class=HTMLResponse)
 def admin_user_edit_page(request: Request, username: str,
-                          error: Optional[str] = None):
+                          error: str | None = None):
     if not _admin_from_cookie(request):
         return RedirectResponse(url="/admin/login", status_code=303)
     user = user_store.get_user(username)
@@ -347,8 +351,8 @@ def admin_user_edit_submit(
     request: Request,
     username: str,
     password: str = Form(default=""),
-    is_admin: Optional[str] = Form(default=None),
-    can_delete: Optional[str] = Form(default=None),
+    is_admin: str | None = Form(default=None),
+    can_delete: str | None = Form(default=None),
 ):
     if not _admin_from_cookie(request):
         return RedirectResponse(url="/admin/login", status_code=303)
@@ -457,11 +461,11 @@ def list_dirs(refresh: bool = Query(False)):
 @app.get("/api/videos")
 async def list_videos(
     refresh: bool = Query(False, description="是否强制刷新扫描缓存"),
-    dir: Optional[List[str]] = Query(None),
-    dirs: Optional[str] = Query(None),
-    max_seconds: Optional[float] = Query(None, ge=0),
-    min_seconds: Optional[float] = Query(None, ge=0),
-    limit: Optional[int] = Query(None, ge=1, le=5000),
+    dir: list[str] | None = Query(None),
+    dirs: str | None = Query(None),
+    max_seconds: float | None = Query(None, ge=0),
+    min_seconds: float | None = Query(None, ge=0),
+    limit: int | None = Query(None, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ):
     # 若请求 refresh=1 触发后台重扫，但不阻塞
@@ -479,7 +483,7 @@ async def list_videos(
     items = scanner.list_videos()
 
     # 解析 dirs
-    final_dirs: Optional[List[str]] = None
+    final_dirs: list[str] | None = None
     if dir:
         final_dirs = dir
     elif dirs:
@@ -542,9 +546,9 @@ async def delete_video(video_id: str,
 async def pick_random(
     max_size_mb: int = Query(200, ge=1, le=10240,
                             description="最大文件大小（MB）；超过的视频不会出现在随机池中"),
-    exclude: Optional[List[str]] = Query(None,
+    exclude: list[str] | None = Query(None,
                                           description="要排除的视频 id 列表"),
-    series_id: Optional[str] = Query(None,
+    series_id: str | None = Query(None,
                                      description="限定在某个短剧内随机（自动连播下一集时用）"),
     only_first_episode: bool = Query(False,
                                        description="True 时只选非 series 或 episode_no==1 的视频"),

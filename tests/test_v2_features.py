@@ -1,5 +1,4 @@
 """v5.1: pick_random only_first_episode + DELETE /api/videos/{id} + can_delete 权限。"""
-import pytest
 
 from app import scanner as scanner_mod
 from app.scanner import VideoItem
@@ -64,6 +63,6 @@ def test_pick_random_exclude_ids_works(monkeypatch):
 
 
 def test_pick_random_returns_none_when_empty(monkeypatch):
-    monkeypatch.setattr(scanner_mod.scanner, "list_videos", lambda: [])
+    monkeypatch.setattr(scanner_mod.scanner, "list_videos", list)
     v = scanner_mod.scanner.pick_random(max_size_bytes=10**9)
     assert v is None
