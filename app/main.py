@@ -37,75 +37,8 @@ logger = logging.getLogger("feiniu")
 async def lifespan(app: FastAPI):
     # 启动：尽量用磁盘缓存秒开，然后异步扫描校验
     await scanner.warm_up()
-    # 启动后异步扫描不兼容视频,自动请求转码(避免前端播放失败)
-    import asyncio
-    asyncio.create_task(_auto_transcode_incompatible())
     yield
     # 关闭时无需特殊处理
-
-
-async def _auto_transcode_incompatible():
-    """后台任务：扫描所有视频，标记 HEVC/AV1/MKV 等 ExoPlayer 不兼容编码，自动转码
-    转码后端会输出标准 H264 + MP4,ExoPlayer 一定兼容
-    """
-    try:
-        import asyncio as _asyncio
-        # 等扫描完成
-        for _ in range(30):
-            if not scanner.is_scanning:
-                break
-            await _asyncio.sleep(2)
-        items = scanner.list_videos()
-        if not items:
-            return
-        # 取最近的 200 个视频做编码探测（避免一次性扫描全部 3 万个文件）
-        sample = items[:200]
-        logger.info("auto transcode: 开始扫描 %d 个视频的编码", len(sample))
-        bin_path = scanner._get_ffprobe()
-        if bin_path is None:
-            logger.warning("auto transcode: 找不到 ffprobe,跳过")
-            return
-        import subprocess as _sp
-        incompatible_count = 0
-        for v in sample:
-            try:
-                # 探测编码
-                proc = _sp.run(
-                    [bin_path, "-v", "quiet", "-print_format", "json",
-                     "-show_streams", "-select_streams", "v:0",
-                     str(Path(CONFIG.video.root) / v.path if not Path(v.path).is_absolute() else v.path)],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if proc.returncode != 0:
-                    continue
-                import json as _json
-                data = _json.loads(proc.stdout or "{}")
-                streams = data.get("streams") or []
-                if not streams:
-                    continue
-                codec = (streams[0].get("codec_name") or "").lower()
-                # ExoPlayer 不兼容的编码:hevc(h265)、av1、vp9 某些封装、mpeg2、theora
-                # mkv 容器本身 ExoPlayer 支持有限
-                needs = (
-                    codec in ("hevc", "h265", "av1", "vp9", "mpeg2video", "theora")
-                    or Path(v.path).suffix.lower() in (".mkv", ".ts", ".flv", ".avi")
-                )
-                if not needs:
-                    continue
-                # 已转码过？
-                if transcoder.get_task(v.id) and transcoder.get_task(v.id).status == "done":
-                    continue
-                transcoder.request(v.id)
-                incompatible_count += 1
-                logger.info("auto transcode: 请求转码 %s (%s)", v.id, codec)
-                # 限速：每个请求间隔 0.5s，避免压垮 NAS
-                await _asyncio.sleep(0.5)
-            except Exception as e:
-                logger.warning("auto transcode: %s 失败: %s", v.id, e)
-        if incompatible_count:
-            logger.info("auto transcode: 共请求转码 %d 个视频", incompatible_count)
-    except Exception as e:
-        logger.warning("auto transcode: 整体失败: %s", e)
 
 
 app = FastAPI(title="飞牛短视频后端", version="2.0.0", lifespan=lifespan)
