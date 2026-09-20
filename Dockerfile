@@ -8,9 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 装系统依赖（yaml 需要 libyaml，运行时可选；保留便于 build 缓存）
+# 装系统依赖: yaml 解析需要 libyaml, 视频详细信息需要 ffmpeg/ffprobe
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libyaml-dev \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
