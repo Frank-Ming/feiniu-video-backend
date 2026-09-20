@@ -549,6 +549,31 @@ async def get_video(video_id: str):
     return item.to_dict()
 
 
+@app.get("/api/videos/{video_id}/info")
+async def get_video_info(video_id: str):
+    """返回视频详细信息:文件大小、修改时间、编码/帧率/分辨率/时长等 ffprobe 信息。
+    用于前端「视频详细信息」弹窗显示。"""
+    item = scanner.get_by_id(video_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="video not found")
+    from .scanner import probe_full_info
+    info = probe_full_info(Path(item.full_path)) or {}
+    return {
+        "id": video_id,
+        "name": item.name,
+        "path": item.path,
+        "full_path": item.full_path,
+        "size": item.size,
+        "mtime": item.mtime,
+        "duration": item.duration,
+        "is_series": item.is_series,
+        "series_id": item.series_id,
+        "episode_no": item.episode_no,
+        "series_count": item.series_count,
+        "probe": info,
+    }
+
+
 @app.delete("/api/videos/{video_id}")
 async def delete_video(video_id: str,
                         username: str = Depends(require_user)):

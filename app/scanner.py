@@ -124,6 +124,123 @@ def probe_duration(path: Path) -> float | None:
         return None
 
 
+def probe_full_info(path: Path) -> dict | None:
+    """探测视频详细信息（编码/帧率/分辨率/bitrate/时长），失败返回 None。
+
+    优先用 ffprobe（json 格式更稳定）；没有 ffprobe 时用 ffmpeg 解析 stderr。
+    返回字段:
+      duration: 秒
+      bitrate: bps
+      size: 字节
+      format_name: 容器格式 (e.g. "mov,mp4,m4a,3gp,3g2,mj2")
+      video: { codec_name, codec_long_name, profile, width, height,
+               avg_frame_rate, pix_fmt, bit_rate }
+      audio: { codec_name, bit_rate, sample_rate, channels } 或 None
+    """
+    bin_path = _get_ffprobe()
+    if bin_path is None:
+        return None
+    try:
+        is_ffmpeg = bin_path.endswith(("ffmpeg", "ffmpeg.exe"))
+        if is_ffmpeg:
+            return _probe_via_ffmpeg(path, bin_path)
+        proc = subprocess.run(
+            [bin_path, "-v", "quiet", "-print_format", "json",
+             "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            return None
+        return _parse_ffprobe_json(proc.stdout or "{}")
+    except Exception:
+        return None
+
+
+def _parse_ffprobe_json(raw: str) -> dict | None:
+    try:
+        data = json.loads(raw or "{}")
+    except Exception:
+        return None
+    fmt = data.get("format") or {}
+    streams = data.get("streams") or []
+    info: dict = {
+        "duration": float(fmt["duration"]) if fmt.get("duration") else None,
+        "bitrate": int(fmt["bit_rate"]) if fmt.get("bit_rate") else None,
+        "size": int(fmt["size"]) if fmt.get("size") else None,
+        "format_name": fmt.get("format_name"),
+    }
+    v = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if v:
+        afr = v.get("avg_frame_rate") or "0/1"
+        # "30/1" -> 30.0
+        try:
+            num, den = afr.split("/")
+            fps = float(num) / float(den) if float(den) else 0.0
+        except Exception:
+            fps = None
+        info["video"] = {
+            "codec_name": v.get("codec_name"),
+            "codec_long_name": v.get("codec_long_name"),
+            "profile": v.get("profile"),
+            "width": v.get("width"),
+            "height": v.get("height"),
+            "avg_frame_rate": fps,
+            "pix_fmt": v.get("pix_fmt"),
+            "bit_rate": int(v["bit_rate"]) if v.get("bit_rate") else None,
+        }
+    a = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if a:
+        info["audio"] = {
+            "codec_name": a.get("codec_name"),
+            "bit_rate": int(a["bit_rate"]) if a.get("bit_rate") else None,
+            "sample_rate": int(a["sample_rate"]) if a.get("sample_rate") else None,
+            "channels": a.get("channels"),
+        }
+    return info
+
+
+def _probe_via_ffmpeg(path: Path, bin_path: str) -> dict | None:
+    """没有 ffprobe 时用 ffmpeg -i 解析 stderr。"""
+    try:
+        proc = subprocess.run(
+            [bin_path, "-i", str(path)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    out = (proc.stderr or "") + (proc.stdout or "")
+    import re
+    info: dict = {}
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", out)
+    if m:
+        h, mi, s = m.groups()
+        info["duration"] = int(h) * 3600 + int(mi) * 60 + float(s)
+    m = re.search(r"Duration:\s*\S+\s*,\s*start:\s*\S+\s*,\s*bitrate:\s*(\d+)\s*kb/s", out)
+    if m:
+        info["bitrate"] = int(m.group(1)) * 1000
+    m = re.search(r"Video:\s*([^,]+),\s*([^,]+),[^,]*,\s*(\d+)x(\d+)[^,]*,\s*([\d.]+)\s*fps", out)
+    if m:
+        info["video"] = {
+            "codec_name": m.group(1).strip(),
+            "pix_fmt": m.group(2).strip(),
+            "width": int(m.group(3)),
+            "height": int(m.group(4)),
+            "avg_frame_rate": float(m.group(5)),
+            "profile": None,
+            "codec_long_name": None,
+            "bit_rate": None,
+        }
+    m = re.search(r"Audio:\s*([^,]+),[^,]*,\s*(\d+)\s*Hz[^,]*,\s*([^,]+)", out)
+    if m:
+        info["audio"] = {
+            "codec_name": m.group(1).strip(),
+            "sample_rate": int(m.group(2)),
+            "channels": m.group(3).strip(),
+            "bit_rate": None,
+        }
+    return info or None
+
+
 # ---------------------------------------------------------------------------
 # Scanner
 # ---------------------------------------------------------------------------
