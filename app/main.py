@@ -41,10 +41,10 @@ async def lifespan(app: FastAPI):
     # 关闭时无需特殊处理
 
 
-app = FastAPI(title="飞牛短视频后端", version="6.3", lifespan=lifespan)
+app = FastAPI(title="飞牛短视频后端", version="6.7", lifespan=lifespan)
 
 # 后端版本号 (跟 git tag 一致),前端可以查这个判断是否需要更新
-BACKEND_VERSION = "6.3"
+BACKEND_VERSION = "6.7"
 # API 协议版本:不兼容的协议变更时 +1
 API_VERSION = "6"
 
@@ -117,6 +117,8 @@ async def require_admin(username: str = Depends(require_user)) -> str:
 # ---------- 健康 & 配置 ----------
 @app.get("/api/health")
 def health():
+    # 顺便暴露 ffprobe/ffmpeg 可用性,前端可据此判断要不要弹"未安装"提示
+    probe_bin = _get_ffprobe()
     return {
         "status": "ok",
         "version": BACKEND_VERSION,
@@ -124,6 +126,8 @@ def health():
         "root": str(scanner.root),
         "scanning": scanner.is_scanning,
         "cache_size": len(scanner.list_videos()),
+        "ffprobe_available": probe_bin is not None,
+        "ffprobe_path": probe_bin,
     }
 
 
