@@ -2,6 +2,9 @@
 line-length = 100
 target-version = "py310"
 
+[lint.isort]
+known-first-party = ["app"]
+
 [lint]
 # BLE001：fastapi 路由里大量 try/except 吞异常是合理的（不影响响应）
 # B008：FastAPI Query/Depends 在参数默认值里调用是官方推荐写法

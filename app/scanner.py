@@ -218,19 +218,19 @@ def _probe_via_ffmpeg(path: Path, bin_path: str) -> dict | None:
     m = re.search(r"Duration:\s*\S+\s*,\s*start:\s*\S+\s*,\s*bitrate:\s*(\d+)\s*kb/s", out)
     if m:
         info["bitrate"] = int(m.group(1)) * 1000
-    m = re.search(r"Video:\s*([^,]+),\s*([^,]+),[^,]*,\s*(\d+)x(\d+)[^,]*,\s*([\d.]+)\s*fps", out)
+    m = re.search(r"Video:\s*(\S+)\s.*?(\d+)x(\d+).*?([\d.]+)\s*fps", out)
     if m:
         info["video"] = {
             "codec_name": m.group(1).strip(),
-            "pix_fmt": m.group(2).strip(),
-            "width": int(m.group(3)),
-            "height": int(m.group(4)),
-            "avg_frame_rate": float(m.group(5)),
+            "pix_fmt": None,
+            "width": int(m.group(2)),
+            "height": int(m.group(3)),
+            "avg_frame_rate": float(m.group(4)),
             "profile": None,
             "codec_long_name": None,
             "bit_rate": None,
         }
-    m = re.search(r"Audio:\s*([^,]+),[^,]*,\s*(\d+)\s*Hz[^,]*,\s*([^,]+)", out)
+    m = re.search(r"Audio:\s*([^,]+).*?(\d+)\s*Hz.*?,\s*([^,\n\(]+?)\s*\(", out)
     if m:
         info["audio"] = {
             "codec_name": m.group(1).strip(),
